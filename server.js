@@ -11,6 +11,12 @@ const ADMIN_USER = "admin";
 const ADMIN_PASS = "#!54847**__";
 
 
+// ✅ 🔥 IMPORTANT — HOMEPAGE ROUTE (missing tha)
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+
 app.get("/admin", (req, res) => {
   res.sendFile(path.join(__dirname, "login.html"));
 });
