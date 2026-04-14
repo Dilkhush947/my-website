@@ -5,20 +5,21 @@ const path = require("path");
 const app = express();
 
 app.use(express.json());
-app.use(express.static("public"));
+app.use(express.static(path.join(__dirname, "public")));
 
 const ADMIN_USER = "admin";
 const ADMIN_PASS = "#!54847**__";
 
-
-// ✅ 🔥 IMPORTANT — HOMEPAGE ROUTE (missing tha)
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "index.html"));
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-
 app.get("/admin", (req, res) => {
-  res.sendFile(path.join(__dirname, "login.html"));
+  res.sendFile(path.join(__dirname, "public", "login.html"));
+});
+
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
 });
 
 app.post("/login", (req, res) => {
@@ -31,22 +32,26 @@ app.post("/login", (req, res) => {
   }
 });
 
-app.get("/dashboard", (req, res) => {
-  res.sendFile(path.join(__dirname, "dashboard.html"));
-});
-
 app.get("/data", (req, res) => {
-  fs.readFile("appointments.txt", "utf8", (err, data) => {
-    if (err) return res.json([]);
+  fs.readFile("appointments.csv", "utf8", (err, data) => {
+    if (err || !data) return res.json([]);
 
-    const entries = data.split("--------------------------").filter(e => e.trim());
+    const lines = data.trim().split("\n").slice(1);
 
-    const result = entries.map(e => ({
-      name: e.match(/Name: (.*)/)?.[1],
-      phone: e.match(/Phone: (.*)/)?.[1],
-      date: e.match(/Date: (.*)/)?.[1],
-      time: e.match(/Time: (.*)/)?.[1],
-    }));
+    const result = lines
+      .filter(line => line.trim())
+      .map(line => {
+        const [name, phone, email, problem, date, time, status] = line.split(",");
+        return {
+          name,
+          phone,
+          email,
+          problem,
+          date,
+          time,
+          status: status || "Pending"
+        };
+      });
 
     res.json(result);
   });
@@ -55,16 +60,21 @@ app.get("/data", (req, res) => {
 app.get("/slots", (req, res) => {
   const { date } = req.query;
 
-  fs.readFile("appointments.txt", "utf8", (err, data) => {
+  fs.readFile("appointments.csv", "utf8", (err, data) => {
     if (err || !data) return res.json([]);
 
+    const lines = data.trim().split("\n").slice(1);
     const booked = [];
-    const entries = data.split("--------------------------");
 
-    entries.forEach(entry => {
-      if (entry.includes(`Date: ${date}`)) {
-        const match = entry.match(/Time: (.*)/);
-        if (match) booked.push(match[1].trim());
+    lines.forEach(line => {
+      if (!line.trim()) return;
+
+      const cols = line.split(",");
+      const existingDate = cols[4];
+      const existingTime = cols[5];
+
+      if (existingDate === date) {
+        booked.push(existingTime);
       }
     });
 
@@ -90,41 +100,74 @@ app.post("/book", (req, res) => {
 
   const newTime = timeToMinutes(time);
 
-  fs.readFile("appointments.txt", "utf8", (err, data) => {
+  fs.readFile("appointments.csv", "utf8", (err, data) => {
+    const lines = data ? data.trim().split("\n").slice(1) : [];
 
-    if (data) {
-      const entries = data.split("--------------------------");
+    for (let line of lines) {
+      if (!line.trim()) continue;
 
-      for (let entry of entries) {
-        if (entry.includes(`Date: ${date}`)) {
+      const cols = line.split(",");
+      const existingDate = cols[4];
+      const existingTime = cols[5];
 
-          const match = entry.match(/Time: (.*)/);
-          if (match) {
-            const existingTime = timeToMinutes(match[1].trim());
-
-            if (Math.abs(existingTime - newTime) < 35) {
-              return res.json({ ok: false, msg: "Slot not available (35 min gap required)" });
-            }
-          }
+      if (existingDate === date) {
+        const existingMinutes = timeToMinutes(existingTime);
+        if (Math.abs(existingMinutes - newTime) < 35) {
+          return res.json({ ok: false, msg: "Slot not available (35 min gap required)" });
         }
       }
     }
 
-    const line = `
-Name: ${name}
-Phone: ${phone}
-Email: ${email}
-Problem: ${problem}
-Date: ${date}
-Time: ${time}
---------------------------
-`;
+    const safeName = (name || "").replace(/,/g, " ");
+    const safePhone = (phone || "").replace(/,/g, " ");
+    const safeEmail = (email || "").replace(/,/g, " ");
+    const safeProblem = (problem || "").replace(/,/g, " ");
+    const safeDate = (date || "").replace(/,/g, " ");
+    const safeTime = (time || "").replace(/,/g, " ");
 
-    fs.appendFile("appointments.txt", line, (err) => {
+    const row = `\n${safeName},${safePhone},${safeEmail},${safeProblem},${safeDate},${safeTime},Pending`;
+
+    fs.appendFile("appointments.csv", row, err => {
       if (err) return res.status(500).json({ ok: false });
       res.json({ ok: true });
     });
+  });
+});
 
+app.post("/update-status", (req, res) => {
+  const { phone, date, time, status } = req.body;
+
+  fs.readFile("appointments.csv", "utf8", (err, data) => {
+    if (err || !data) return res.status(500).json({ ok: false });
+
+    const lines = data.trim().split("\n");
+    const header = lines[0];
+    const rows = lines.slice(1);
+
+    const updatedRows = rows.map(line => {
+      const cols = line.split(",");
+
+      const existingPhone = cols[1];
+      const existingDate = cols[4];
+      const existingTime = cols[5];
+
+      if (
+        existingPhone === phone &&
+        existingDate === date &&
+        existingTime === time
+      ) {
+        cols[6] = status;
+      }
+
+      return cols.join(",");
+    });
+
+    const finalData = [header, ...updatedRows].join("\n");
+
+    fs.writeFile("appointments.csv", finalData, err => {
+      if (err) return res.status(500).json({ ok: false });
+      res.json({ ok: true });
+    });
   });
 });
 
